@@ -1,12 +1,11 @@
 import { Page } from "puppeteer";
 import * as puppeteer from "puppeteer";
-import { BookingModel } from "../models/booking";
-import { BookingStatus } from "../types/booking";
 import { FormDetails } from "../types/booking";
 
 export class PuppeteerService {
   private page: Page | null = null;
   private browser: puppeteer.Browser | null = null;
+  private selectedDate: string | undefined;
 
   async initBrowser() {
     this.browser = await puppeteer.launch({
@@ -33,56 +32,129 @@ export class PuppeteerService {
       await this.page.click(selector);
     });
   }
-
-  async bookFirstAvailableSlot(
-    calendlyUrl: string,
-    details: FormDetails
-  ): Promise<boolean> {
+  async goToCalendlyPage(calendlyUrl: string): Promise<void> {
     if (!this.page) throw new Error("Browser not initialized");
 
     try {
-      // 1. Navigate to the Calendly URL
-      console.log("Navigating to Calendly...");
+      console.log("Navigating to Calendly page...");
       await this.page.goto(calendlyUrl, { waitUntil: "networkidle0" });
+      console.log("Navigation completed");
+    } catch (error) {
+      console.error("Error navigating to Calendly page:", error);
+      throw error;
+    }
+  }
 
-      // 2. Wait for and click the first available time slot
+  async bookFirstAvailableSlot(): Promise<Date> {
+    if (!this.page) throw new Error("Browser not initialized");
+
+    try {
+      // 1. Wait for and click the first available time slot
+      if (!this.page) throw new Error("Browser not initialized");
+
       console.log("Looking for first available time slot...");
+      let selectedDateTime: Date | undefined; // Initialize here
+
+      // Get the selected date
       await this.retry(async () => {
-        const availableDateSelector = 'button[aria-current="date"]';
+        const availableDateSelector =
+          'button[type="button"][aria-label*="Times available"]:not([disabled])';
         await this.page!.waitForSelector(availableDateSelector);
-        await this.page!.click(availableDateSelector);
+
+        // Get the date from aria-label before clicking
+        const dateElements = await this.page!.$$(availableDateSelector);
+        if (dateElements.length === 0) {
+          throw new Error("No available dates found");
+        }
+        const ariaLabel = await dateElements[0].evaluate((el) =>
+          el.getAttribute("aria-label")
+        );
+        this.selectedDate = ariaLabel?.split(",")[1].split("-")[0].trim();
+        console.log("Selected date:", this.selectedDate);
+
+        await dateElements[0].click();
       });
+
+      // Get and click time slot
       await this.retry(async () => {
-        // Using data-container and data-start-time attributes which are more stable
-        const timeSlotSelector = 'button[data-container="time-button"]';
+        const timeSlotSelector =
+          'button[data-container="time-button"]:not([disabled])';
         await this.page!.waitForSelector(timeSlotSelector);
 
-        // Get all time slots and click first available
         const timeSlots = await this.page!.$$(timeSlotSelector);
         if (timeSlots.length === 0) {
           throw new Error("No available time slots found");
         }
 
-        console.log("Clicking first available time slot");
-        await timeSlots[0].click();
+        // Get the time before clicking
+        const startTime = await timeSlots[0].evaluate((el) =>
+          el.getAttribute("data-start-time")
+        );
+        console.log(`Selected time slot: ${startTime}`);
 
-        await this.retry(async () => {
-          // Using role and aria-label containing "Next"
-          const nextButtonSelector =
-            'button[role="button"][aria-label^="Next"]';
-          await this.page!.waitForSelector(nextButtonSelector);
-          console.log("Clicking next button");
-          await this.page!.click(nextButtonSelector);
-        });
+        // Combine date and time to create DateTime
+        if (this.selectedDate && startTime) {
+          // Parse the date parts
+          const year = new Date().getFullYear();
+          const month = this.selectedDate.split(" ")[0]; // "January"
+          const day = parseInt(this.selectedDate.split(" ")[1]); // "4"
+
+          // Convert month name to month number (0-11)
+          const monthNames = [
+            "January",
+            "February",
+            "March",
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "November",
+            "December",
+          ];
+          const monthIndex = monthNames.indexOf(month);
+
+          // Parse time
+          const timeMatch = startTime.match(/(\d+):(\d+)(am|pm)/);
+          if (!timeMatch) {
+            throw new Error("Invalid time format");
+          }
+
+          let hours = parseInt(timeMatch[1]);
+          const minutes = parseInt(timeMatch[2]);
+          const isPM = timeMatch[3].toLowerCase() === "pm";
+
+          // Convert to 24-hour format
+          if (isPM && hours !== 12) {
+            hours += 12;
+          } else if (!isPM && hours === 12) {
+            hours = 0;
+          }
+
+          // Create date object
+          selectedDateTime = new Date(year, monthIndex, day, hours, minutes);
+          console.log(`Booking DateTime:`, selectedDateTime);
+        }
+
+        await timeSlots[0].click();
       });
 
-      // 4. Wait for the form page and fill details
-      console.log("Filling form details...");
-      await this.fillFormAndSubmit(details);
+      // Click Next button
+      await this.retry(async () => {
+        const nextButtonSelector = 'button[role="button"][aria-label^="Next"]';
+        await this.page!.waitForSelector(nextButtonSelector);
+        await this.page!.click(nextButtonSelector);
+      });
 
-      return true;
+      if (!selectedDateTime) {
+        throw new Error("Failed to capture booking date and time");
+      }
+
+      return selectedDateTime; // TypeScript now knows this is defined
     } catch (error) {
-      console.error("Automation failed:", error);
+      console.error("Error in selecting date and time:", error);
       throw error;
     }
   }
@@ -104,34 +176,67 @@ export class PuppeteerService {
 
       // Handle guest emails if provided
       if (details.guestEmails?.length) {
+        console.log("Adding guest emails:", details.guestEmails);
         // Click add guests button
-        console.log("Filling guest emails..");
-        const addGuestButton = 'button:has-text("Add Guests")';
-        await this.waitAndClick(addGuestButton);
+        await this.retry(async () => {
+          await this.page!.waitForSelector('button[type="button"] span');
+          const buttons = await this.page!.$$('button[type="button"] span');
+          let buttonFound = false;
 
+          for (const button of buttons) {
+            const text = await button.evaluate((el) => el.textContent?.trim());
+            if (text === "Add Guests") {
+              await button.click();
+              buttonFound = true;
+              console.log("Clicked Add Guests button");
+              break;
+            }
+          }
+
+          if (!buttonFound) {
+            throw new Error("Add Guests button not found");
+          }
+        });
         // Add each guest
         for (const guestEmail of details.guestEmails) {
           await this.retry(async () => {
-            // Using id which is more reliable
-            const guestSelector = "#invitee_guest_input";
-            await this.page!.waitForSelector(guestSelector);
-            await this.page!.type(guestSelector, guestEmail);
-            await this.page!.keyboard.press("Enter");
+            console.log(`Starting to add guest email: ${guestEmail}`);
 
-            // Wait for the email to be added using waitForFunction
+            // Using the exact selector for the guest input
+            const guestEmailSelector =
+              'input[role="combobox"][aria-label="Guest Email(s)"]';
+            await this.page!.waitForSelector(guestEmailSelector);
+
+            // Clear any existing value and focus the input
+            await this.page!.evaluate((selector) => {
+              const input = document.querySelector(
+                selector
+              ) as HTMLInputElement;
+              if (input) {
+                input.value = "";
+                input.focus();
+              }
+            }, guestEmailSelector);
+
+            // Type the email
+            await this.page!.type(guestEmailSelector, guestEmail);
+            console.log(`Typed guest email: ${guestEmail}`);
+
+            // Press Enter
+            await this.page!.keyboard.press("Enter");
+            console.log(`Pressed Enter for: ${guestEmail}`);
+
+            // Wait for the email to be accepted
             await this.page!.waitForFunction(
-              (email) => {
-                // Look for elements that contain the added email
-                const addedEmails = document.querySelectorAll(
-                  '[data-qa="added-guest"]'
-                );
-                return Array.from(addedEmails).some((el) =>
-                  el.textContent?.includes(email)
-                );
+              () => {
+                const input = document.querySelector(
+                  'input[role="combobox"]'
+                ) as HTMLInputElement;
+                return input && input.value === ""; // Input should be cleared after successful add
               },
-              {},
-              guestEmail
+              { timeout: 5000 }
             );
+            console.log(`Guest email ${guestEmail} was added`);
           });
         }
       }
@@ -158,8 +263,13 @@ export class PuppeteerService {
           });
         }
       }
-      const scheduleButton = 'button[type="submit"]';
-      await this.waitAndClick(scheduleButton);
+      console.log("Clicking Schedule Event button...");
+      await this.retry(async () => {
+        const scheduleButton = 'button[type="submit"]';
+        await this.page!.waitForSelector(scheduleButton);
+        await this.page!.click(scheduleButton);
+        console.log("Clicked Schedule Event button");
+      });
 
       // Wait for confirmation page or success indicator
       // This selector might need adjustment based on Calendly's actual confirmation page

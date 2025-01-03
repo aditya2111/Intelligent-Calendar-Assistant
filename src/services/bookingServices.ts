@@ -22,8 +22,15 @@ export class BookingService {
       console.log("Booking status: Processing");
       await BookingModel.updateStatus(bookingId, BookingStatus.PROCESSING);
 
+      await this.puppeteerService.goToCalendlyPage(calendlyUrl);
+
       // Single method call for automation
-      await this.puppeteerService.bookFirstAvailableSlot(calendlyUrl, details);
+      const bookedDateTime =
+        await this.puppeteerService.bookFirstAvailableSlot();
+
+      await this.puppeteerService.fillFormAndSubmit(details);
+
+      await BookingModel.updateBookedFor(bookingId, bookedDateTime);
 
       console.log("Booking status: Completed");
       await BookingModel.updateStatus(bookingId, BookingStatus.COMPLETED);

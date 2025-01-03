@@ -69,4 +69,21 @@ export class BookingModel {
       client.release();
     }
   }
+  static async updateBookedFor(id: number, bookedFor: Date): Promise<void> {
+    const client = await pool.connect();
+    try {
+      const query = `
+            UPDATE bookings 
+            SET bookedfor = $1
+            WHERE id = $2
+        `;
+      const result = await client.query(query, [bookedFor, id]);
+
+      if (result.rowCount === 0) {
+        throw new Error(`No booking found with id: ${id}`);
+      }
+    } finally {
+      client.release();
+    }
+  }
 }
