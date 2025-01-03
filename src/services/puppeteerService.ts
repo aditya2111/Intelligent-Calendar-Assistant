@@ -263,12 +263,29 @@ export class PuppeteerService {
           });
         }
       }
-      console.log("Clicking Schedule Event button...");
       await this.retry(async () => {
-        const scheduleButton = 'button[type="submit"]';
-        await this.page!.waitForSelector(scheduleButton);
-        await this.page!.click(scheduleButton);
+        const scheduleButtonSelector = 'button[type="submit"]';
+        await this.page!.waitForSelector(scheduleButtonSelector);
+        console.log("Found Schedule Event button");
+
+        await this.page!.evaluate(() => {
+          const button = document.querySelector(
+            'button[type="submit"]'
+          ) as HTMLButtonElement;
+          if (button) button.click();
+        });
         console.log("Clicked Schedule Event button");
+
+        // Wait for confirmation
+        try {
+          await this.page!.waitForNavigation({
+            waitUntil: "networkidle0",
+            timeout: 10000,
+          });
+          console.log("Navigation completed after scheduling");
+        } catch (error) {
+          console.log("No navigation occurred after clicking Schedule Event");
+        }
       });
 
       // Wait for confirmation page or success indicator
